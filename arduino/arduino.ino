@@ -5,64 +5,92 @@
 #include <Adafruit_SSD1306.h>
 #include "DHT.h"
 
-// ================= CONFIGURAÇÕES GERAIS =================
+// ================= PROTOCOL =================
+// Lines of text ending in '\n', at 9600 baud.
+// From the Arduino to the PC:
+//   KEY:<0-9>       a key was pressed
+//   TEMP:<degrees>  temperature in °C, e.g. TEMP:27.90
+//   HUM:<percent>   relative humidity, e.g. HUM:55.00
+//   SYSTEM:<text>   started, or an error
+// From the PC to the Arduino:
+//   TIME:<text>             date and time for the screen, every second (5 s without one and the PC counts as gone)
+//   MSG:<text>              shows the text on the screen for 3 s
+//   PIXEL:<id>,<r>,<g>,<b>  an LED's colour, id 0 to 2, each colour 0 to 255
+// Each time the PC connects (its first TIME), the Arduino sends TEMP and HUM straight away.
 
-// --- Ecrã OLED ---
+// ================= SETTINGS =================
+
+// --- OLED screen ---
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 32
 #define OLED_RESET -1
 #define SCREEN_ADDRESS 0x3C
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// --- Sensor DHT22 ---
+// Characters that fit on a line at text size 2: 12 px each.
+const byte LARGE_CHARACTERS = SCREEN_WIDTH / 12; // 10
+
+// --- DHT22 sensor ---
 #define DHTPIN 12
 #define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
 
-float ultimaTemp = 0.0;
-float ultimaHum = 0.0;
-bool erroSensor = false;
+float lastTemperature = 0.0;
+float lastHumidity = 0.0;
+bool hasReading = false;  // There has been a good reading
+bool sensorError = false; // The last reading failed
 
-// --- LEDs NeoPixel ---
+// --- NeoPixel LEDs ---
 #define NUMPIXELS 3
 #define PIN 2
 Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 
-// --- Teclado Matricial ---
+// --- Matrix keypad ---
 const byte ROWS = 2;
 const byte COLS = 5;
 char keys[ROWS][COLS] = {
-  {'0','1','2','3','4'},
-  {'5','6','7','8','9'}
+  {'5','6','7','8','9'},
+  {'0','1','2','3','4'}
 };
 byte rowPins[ROWS] = {3, 4};
 byte colPins[COLS] = {5, 6, 7, 8, 9};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
-// --- Temporizadores ---
-unsigned long tempoAnteriorTemp = 0;
-const long intervaloTemp = 60000; // Lê o DHT a cada 60 seg
+// --- Timers ---
+const unsigned long sensorInterval = 60000UL;      // Reads the DHT every 60 s
+const unsigned long sensorRetryInterval = 5000UL;  // Tries again after 5 s while it fails
+const unsigned long messageDuration = 3000UL;      // How long a message stays on the screen
+const unsigned long pcMessageTimeout = 500UL;      // Waits for the PC's MSG before showing "Macro:"
+const unsigned long pcTimeout = 5000UL;            // The PC counts as gone after 5 s without TIME
+unsigned long lastSensorRead = 0;
 
-// --- Controlo da Tecla no Ecrã ---
-bool mostrarTeclaEcra = false;
-String textoMacro = "";
-unsigned long tempoMostrarTecla = 0;
-char ultimaTecla = 0;
-bool aguardarMsgPc = false;
-unsigned long tempoAguardarMsg = 0;
-const unsigned long timeoutMsgPc = 500; // Espera por MSG do PC antes do "Macro:"
+// --- Line coming in from the PC ---
+// Read a little at a time, without blocking, so the keys always answer.
+const byte LINE_SIZE = 64;
+char pcLine[LINE_SIZE];
+byte pcLineLength = 0;
 
-// Variável para guardar a Hora enviada pelo Python
-String dataHoraAtual = "A aguardar PC..."; 
-bool pcConectado = false;
-unsigned long ultimoHeartbeatPc = 0;
-const unsigned long timeoutPcMs = 5000; // Considera PC desconectado apos 5s sem hora
+// --- Screen: time and messages ---
+// In char[] rather than String: on an Arduino with 2 KB of RAM, String fragments the memory over time.
+const char WAITING_FOR_PC[] = "Waiting for PC...";
+char currentDateTime[24];
+char messageText[32] = "";
+bool showingMessage = false;
+unsigned long messageShownAt = 0;
+char lastKey = 0;
+bool waitingForPcMessage = false;
+unsigned long keyPressedAt = 0;
+
+bool pcConnected = false;
+unsigned long lastPcTime = 0;
 
 // ================= SETUP =================
 void setup() {
-  Serial.begin(9600); 
-  Serial.setTimeout(50); // Torna a leitura da Serial mais rápida
+  Serial.begin(9600);
   pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW); // On while the PC is connected
+
+  strcpy(currentDateTime, WAITING_FOR_PC);
 
   pixels.begin();
   pixels.clear();
@@ -70,163 +98,191 @@ void setup() {
 
   dht.begin();
 
-  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
-    Serial.println("Erro no OLED");
-    for(;;);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SYSTEM:OLED error"));
+    for (;;);
   }
-  display.setRotation(0); // Orientação normal do ecrã
-  
-  Serial.println("SISTEMA:Iniciado");
-  lerSensorDHT();
-  atualizarEcra();
+  display.setRotation(0); // Screen the right way up
+
+  Serial.println(F("SYSTEM:Started"));
+
+  // The DHT22 needs about 2 s after power-up: the first reading waits until then, and the
+  // screen says "Reading..." rather than an error meanwhile.
+  lastSensorRead = millis() - (sensorRetryInterval - 2000UL);
+  updateScreen();
 }
 
-// ================= LOOP PRINCIPAL =================
+// ================= MAIN LOOP =================
 void loop() {
-  unsigned long tempoAtual = millis();
+  // 1. TAKE THE PC'S COMMANDS
+  readSerial();
 
-  // 1. RECEBER COMANDOS DO PYTHON
-  if (Serial.available() > 0) {
-    String mensagem = Serial.readStringUntil('\n');
-    mensagem.trim(); 
-    
-    // A) Recebe a Hora
-    if (mensagem.startsWith("HORA:")) {
-      dataHoraAtual = mensagem.substring(5); 
-      pcConectado = true;
-      ultimoHeartbeatPc = millis();
-      if (!mostrarTeclaEcra) atualizarEcra();
-    }
-    // B) Recebe Mensagem de Texto para o ecrã
-    else if (mensagem.startsWith("MSG:")) {
-      textoMacro = mensagem.substring(4);
-      mostrarTeclaEcra = true;
-      aguardarMsgPc = false;
-      tempoMostrarTecla = millis();
-      atualizarEcra();
-    }
-    // C) Recebe Comando para os NeoPixels (Ex: PIXEL:0,255,0,0)
-    else if (mensagem.startsWith("PIXEL:")) {
-      String dados = mensagem.substring(6);
-      int v1 = dados.indexOf(',');
-      int v2 = dados.indexOf(',', v1 + 1);
-      int v3 = dados.indexOf(',', v2 + 1);
-
-      if (v1 > 0 && v2 > 0 && v3 > 0) {
-        int id = dados.substring(0, v1).toInt();
-        int r = dados.substring(v1 + 1, v2).toInt();
-        int g = dados.substring(v2 + 1, v3).toInt();
-        int b = dados.substring(v3 + 1).toInt();
-        
-        pixels.setPixelColor(id, pixels.Color(r, g, b));
-        pixels.show();
-      }
-    }
-  }
-
-  // 2. VERIFICAR BOTÕES
+  // 2. CHECK THE KEYS
   char key = keypad.getKey();
   if (key) {
-    lerTecla(key);
+    onKeyPressed(key);
   }
 
-  // 2.1. Se o PC nao respondeu com MSG, mostra "Macro:"
-  if (aguardarMsgPc && (millis() - tempoAguardarMsg >= timeoutMsgPc)) {
-    textoMacro = "Macro: ";
-    textoMacro += ultimaTecla;
-    mostrarTeclaEcra = true;
-    aguardarMsgPc = false;
-    tempoMostrarTecla = millis();
-    atualizarEcra();
+  // millis() is read at each step: kept from the start of the loop, it would be behind a time set
+  // since (a MSG just in) and the subtraction would wrap around.
+
+  // 2.1. The PC didn't answer with a MSG: shows "Macro:"
+  if (waitingForPcMessage && millis() - keyPressedAt >= pcMessageTimeout) {
+    waitingForPcMessage = false;
+    snprintf(messageText, sizeof(messageText), "Macro: %c", lastKey);
+    showMessage();
   }
 
-  // 3. REMOVER A TECLA DO ECRÃ APÓS 3 SEGUNDOS (Corrigido!)
-  if (mostrarTeclaEcra && (millis() - tempoMostrarTecla >= 3000)) {
-    mostrarTeclaEcra = false;
-    atualizarEcra();
+  // 3. TAKE THE MESSAGE OFF THE SCREEN AFTER 3 SECONDS
+  if (showingMessage && millis() - messageShownAt >= messageDuration) {
+    showingMessage = false;
+    updateScreen();
   }
 
-  // 4. LER SENSOR DHT
-  if (tempoAtual - tempoAnteriorTemp >= intervaloTemp) {
-    tempoAnteriorTemp = tempoAtual; 
-    lerSensorDHT();
-    if (!mostrarTeclaEcra) atualizarEcra(); 
+  // 4. READ THE DHT SENSOR (sooner while there's no good reading)
+  unsigned long interval = (hasReading && !sensorError) ? sensorInterval : sensorRetryInterval;
+  if (millis() - lastSensorRead >= interval) {
+    lastSensorRead = millis();
+    readSensor();
+    if (pcConnected) sendSensor();
+    if (!showingMessage) updateScreen();
   }
 
-  // 5. Se perder ligacao ao PC, mostra "A aguardar PC..."
-  if (pcConectado && (millis() - ultimoHeartbeatPc > timeoutPcMs)) {
-    pcConectado = false;
-    dataHoraAtual = "A aguardar PC...";
-    if (!mostrarTeclaEcra) atualizarEcra();
+  // 5. The PC is gone: shows "Waiting for PC..."
+  if (pcConnected && millis() - lastPcTime > pcTimeout) {
+    pcConnected = false;
+    digitalWrite(LED_BUILTIN, LOW);
+    strcpy(currentDateTime, WAITING_FOR_PC);
+    if (!showingMessage) updateScreen();
   }
 }
 
-// ================= FUNÇÕES =================
+// ================= FUNCTIONS =================
 
-void lerTecla(char key) {
-  digitalWrite(LED_BUILTIN, HIGH);
+// Gathers the characters coming in into a line, and handles it once its '\n' arrives.
+void readSerial() {
+  while (Serial.available() > 0) {
+    char c = Serial.read();
 
-  // Espera um MSG do PC antes de mostrar o "Macro:"
-  ultimaTecla = key;
-  aguardarMsgPc = true;
-  tempoAguardarMsg = millis();
+    if (c == '\n') {
+      pcLine[pcLineLength] = '\0';
+      handleLine(pcLine);
+      pcLineLength = 0;
+    } else if (c != '\r' && pcLineLength < LINE_SIZE - 1) {
+      // A line longer than the buffer is cut short, rather than written past it.
+      pcLine[pcLineLength++] = c;
+    }
+  }
+}
 
-  // Envia a tecla apenas, a lógica dos LEDs ficou no Python!
-  Serial.print("TECLA:");
+void handleLine(const char* line) {
+  // A) The time
+  if (strncmp(line, "TIME:", 5) == 0) {
+    copyText(currentDateTime, sizeof(currentDateTime), line + 5);
+    bool justConnected = !pcConnected;
+    pcConnected = true;
+    lastPcTime = millis();
+    digitalWrite(LED_BUILTIN, HIGH);
+
+    // The PC just connected: it gets the temperature and the humidity now, not at the next reading.
+    if (justConnected) sendSensor();
+    if (!showingMessage) updateScreen();
+  }
+  // B) A message for the screen
+  else if (strncmp(line, "MSG:", 4) == 0) {
+    copyText(messageText, sizeof(messageText), line + 4);
+    waitingForPcMessage = false;
+    showMessage();
+  }
+  // C) An LED's colour (e.g. PIXEL:0,255,0,0)
+  else if (strncmp(line, "PIXEL:", 6) == 0) {
+    int id, r, g, b;
+    if (sscanf(line + 6, "%d,%d,%d,%d", &id, &r, &g, &b) == 4 && id >= 0 && id < NUMPIXELS) {
+      pixels.setPixelColor(id, pixels.Color(constrain(r, 0, 255), constrain(g, 0, 255), constrain(b, 0, 255)));
+      pixels.show();
+    }
+  }
+}
+
+void onKeyPressed(char key) {
+  // Waits for the PC's MSG before showing "Macro:"
+  lastKey = key;
+  waitingForPcMessage = true;
+  keyPressedAt = millis();
+
+  // Only the key is sent: what it does is up to the PC.
+  Serial.print(F("KEY:"));
   Serial.println(key);
-  
-  digitalWrite(LED_BUILTIN, LOW);
 }
 
-void lerSensorDHT() {
+void readSensor() {
   float h = dht.readHumidity();
   float t = dht.readTemperature();
 
   if (isnan(h) || isnan(t)) {
-    erroSensor = true;
+    sensorError = true;
     return;
   }
-  if (h > 100.0 || h < 0.0 || t < -40.0 || t > 80.0) return; 
+  if (h > 100.0 || h < 0.0 || t < -40.0 || t > 80.0) return;
 
-  erroSensor = false;
-  ultimaTemp = t;
-  ultimaHum = h;
-
-  Serial.print("TEMP:");
-  Serial.println(ultimaTemp);
+  sensorError = false;
+  hasReading = true;
+  lastTemperature = t;
+  lastHumidity = h;
 }
 
-void atualizarEcra() {
+// Sends the last good reading to the PC; nothing while there's none.
+void sendSensor() {
+  if (!hasReading) return;
+
+  Serial.print(F("TEMP:"));
+  Serial.println(lastTemperature);
+  Serial.print(F("HUM:"));
+  Serial.println(lastHumidity);
+}
+
+void showMessage() {
+  showingMessage = true;
+  messageShownAt = millis();
+  updateScreen();
+}
+
+// Copies text into a char[] without going past its size, always ending in '\0'.
+void copyText(char* destination, size_t size, const char* source) {
+  strncpy(destination, source, size - 1);
+  destination[size - 1] = '\0';
+}
+
+void updateScreen() {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
 
-  // Modo Macro em ecrã inteiro
-  if (mostrarTeclaEcra) {
-    display.setTextSize(2);
-    // Tentativa de centrar texto grande
-    display.setCursor(0, 8);
-    display.print(textoMacro);
-  } 
-  // Dashboard Normal
+  // A message on the whole screen: large letters while it fits on a line, small ones when not.
+  if (showingMessage) {
+    bool fitsLarge = strlen(messageText) <= LARGE_CHARACTERS;
+    display.setTextSize(fitsLarge ? 2 : 1);
+    display.setCursor(0, fitsLarge ? 8 : 4);
+    display.print(messageText);
+  }
+  // The usual view: the time at the top, the temperature and humidity below, with or without the PC.
   else {
     display.setTextSize(1);
-    int x_hora = 0;
-    if(dataHoraAtual.length() > 5) { x_hora = (128 - (dataHoraAtual.length() * 6)) / 2; }
-    display.setCursor(x_hora, 0); 
-    display.print(dataHoraAtual);
+    int width = strlen(currentDateTime) * 6;
+    display.setCursor(width < SCREEN_WIDTH ? (SCREEN_WIDTH - width) / 2 : 0, 0);
+    display.print(currentDateTime);
 
-    display.drawLine(0, 11, 128, 11, SSD1306_WHITE);
+    display.drawLine(0, 11, SCREEN_WIDTH, 11, SSD1306_WHITE);
 
     display.setTextSize(2);
-    if (erroSensor) {
-      display.setCursor(0, 15);
-      display.print("Erro DHT!");
+    display.setCursor(0, 15);
+    if (!hasReading) {
+      display.print(sensorError ? F("DHT error!") : F("Reading..."));
     } else {
-      display.setCursor(0, 15);
-      display.print(ultimaTemp, 1);
-      display.print("C ");
-      display.print(ultimaHum, 0);
-      display.print("%");
+      // The last good reading stays, even when a later one fails.
+      display.print(lastTemperature, 1);
+      display.print(F("C "));
+      display.print(lastHumidity, 0);
+      display.print(F("%"));
     }
   }
   display.display();

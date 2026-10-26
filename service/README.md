@@ -1,92 +1,93 @@
 # MacroPad Service
 
-Serviço em Python para integrar o MacroPad Arduino com ações no Windows (atalhos de teclado, escrita de texto/snippets, abertura de aplicações e controlo de LEDs RGB), a correr em segundo plano com ícone na bandeja do sistema (system tray).
+A Python service that connects the Arduino MacroPad to actions in Windows (keyboard shortcuts, typing text and snippets, opening apps and driving the RGB LEDs), running in the background with an icon in the system tray.
 
-## Funcionalidades
+## Features
 
-- **Comunicação Serial Bidirecional**: deteção e ligação com o Arduino através de porta COM configurável.
-- **Sincronização de Relógio**: envio periódico da data/hora atual para apresentação no ecrã OLED do MacroPad.
-- **Execução de Macros**: processamento de eventos `TECLA:x` enviados pelo dispositivo.
-- **Simulação Segura de Teclado**: suporte para caracteres especiais e acentuação no Windows (`SendInput` com suporte para layout de teclado e fallback Unicode).
-- **Interface de Configuração (`Tkinter`)**: seleção gráfica da porta COM e da taxa de transmissão (*baud rate*).
-- **Execução em Segundo Plano (`pystray`)**: ícone na system tray para pausar/retomar serviço, abrir configurações ou encerrar.
-- **Controlo de LEDs NeoPixel**: alternância e sincronização de estados de iluminação RGB.
+- **Two-way serial link**: finds and connects to the Arduino on a COM port you pick.
+- **Clock sync**: sends the current date and time every second, for the MacroPad's OLED screen.
+- **Macros**: runs a macro for each `KEY:x` the device sends.
+- **Reliable typing**: special and accented characters typed right in Windows (`SendInput` following the keyboard layout, with a Unicode fallback).
+- **Settings window (`Tkinter`)**: pick the COM port and the baud rate.
+- **Runs in the background (`pystray`)**: a tray icon to pause and resume the service, open the settings or quit.
+- **NeoPixel LEDs**: turns the RGB LEDs on and off to show a state.
 
-## Pré-requisitos
+## Requirements
 
 - Windows 10 / 11
 - Python 3.10+
-- Dispositivo Arduino com o firmware carregado (`arduino/arduino.ino`)
+- An Arduino with the firmware uploaded (`arduino/arduino.ino`)
 
-## Instalação
+## Installation
 
-No diretório do projeto ou da pasta `service/`, instalar as dependências necessárias:
+From the project folder or the `service/` folder, install the packages it needs:
 
 ```powershell
 py -m pip install pyserial pyautogui pystray pyperclip pillow
 ```
 
-## Configuração
+## Settings
 
-O serviço utiliza o ficheiro `user.dat` para persistir a porta COM e o baud rate selecionados.
-- Um modelo de exemplo é disponibilizado em `user.dat.example`.
-- O ficheiro `user.dat` é criado automaticamente após guardar as configurações pela primeira vez na interface gráfica.
-- **Nota**: O ficheiro `user.dat` é ignorado pelo Git (`.gitignore`) para que as configurações da sua máquina não sejam enviadas para o repositório público.
+The service keeps the COM port and baud rate you pick in `user.dat`.
+- An example is provided in `user.dat.example`.
+- `user.dat` is created the first time you save the settings in the settings window.
+- Settings saved by older versions, with the port under `"porta"`, are still read.
+- **Note**: `user.dat` is ignored by Git (`.gitignore`), so your machine's settings aren't pushed to the public repository.
 
-## Como Executar
+## Running it
 
-Para iniciar o serviço em modo de desenvolvimento:
+To start the service while developing:
 
 ```powershell
 py service.py
 ```
 
-Ao iniciar:
-1. O serviço tenta carregar as definições de `user.dat` (ou `user.dat.example` como fallback) e conectar-se ao Arduino.
-2. É criado um ícone na bandeja do sistema (junto ao relógio do Windows) com as opções:
-   - **Configurações**: abre a janela para selecionar a porta COM e baud rate.
-   - **Iniciar / Parar Serviço**: permite pausar temporariamente a leitura da porta serial.
-   - **Sair**: fecha a porta COM e encerra a aplicação.
+When it starts:
+1. The service loads the settings from `user.dat` (or `user.dat.example` when there's none) and connects to the Arduino.
+2. An icon shows in the system tray (by the Windows clock), with:
+   - **Settings**: opens the window to pick the COM port and baud rate.
+   - **Start / Stop service**: pauses reading the serial port for a while.
+   - **Quit**: closes the COM port and exits.
 
-## Build para Executável (.exe)
+## Building an executable (.exe)
 
-Para criar um ficheiro `.exe` autónomo (que não necessita de consola aberta):
+To build a standalone `.exe` that runs without a console window:
 
-1. Instalar o PyInstaller:
+1. Install PyInstaller:
    ```powershell
    py -m pip install pyinstaller
    ```
-2. Executar o script de compilação:
+2. Run the build script:
    ```powershell
    deploy.bat
    ```
-   Ou manualmente:
+   Or by hand:
    ```powershell
    py -m PyInstaller --noconsole --onefile --name "MacroPadService" service.py
    ```
-3. O executável será gerado na pasta `dist/MacroPadService.exe`.
+3. The executable is built at `dist/MacroPadService.exe`.
 
-## Mapeamento de Teclas Demo
+## Demo key mappings
 
-O código em `service.py` inclui um conjunto de macros de demonstração pré-configuradas:
+`service.py` comes with a set of demo macros:
 
-| Tecla | Ação Executada | Mensagem no Ecrã OLED | Descrição / Demonstração |
+| Key | Action | OLED message | What it shows |
 | :---: | :--- | :--- | :--- |
-| **0** | `Print Screen` | `Print Screen` | Captura de ecrã nativa do Windows |
-| **1** | Escreve clipboard | `Escrever` / `Clipboard vazio` | Digita o texto atualmente copiado |
-| **2** | Digita texto demo | `Demo Texto` | Exemplo de snippet / digitação de texto |
-| **3** | Pisca LED + Texto | `Demo 3` | Ativação temporária de NeoPixel + digitação |
-| **4** | Executa Bloco de Notas | `Bloco Notas` | Exemplo de abertura de aplicação (`notepad.exe`) |
-| **5** | Digita email demo | `Demo Email` | Exemplo de digitação de email / modelo |
-| **6** | Alterna LED 1 | `Spotify` / `Spotify OFF` | Toggle de estado com LED Verde (ex: multimédia) |
-| **7** | Alterna LED 2 | `Discord` / `Desligado` | Toggle de estado com LED Azul (ex: mute de app) |
-| **8** | Silenciar áudio | `Audio Mute` | Envia tecla `volumemute` do Windows |
-| **9** | Executa Calculadora | `Calculadora` | Exemplo de abertura de ferramenta (`calc.exe`) |
+| **0** | `Print Screen` | `Print Screen` | Windows' own screenshot |
+| **1** | Types the clipboard | `Typing` / `Clipboard empty` | Types the text last copied |
+| **2** | Types a demo text | `Demo text` | A snippet typed for you |
+| **3** | LED + text | `Demo 3` | An LED on while it types |
+| **4** | Opens Notepad | `Notepad` | Opening an app (`notepad.exe`) |
+| **5** | Types a demo email | `Demo email` | Typing an email address or a template |
+| **6** | Toggles LED 1 | `Spotify` / `Spotify OFF` | A state as a switch, with a green LED (media, for instance) |
+| **7** | Toggles LED 2 | `Discord` / `Discord OFF` | A state as a switch, with a crimson LED (an app's mute, for instance) |
+| **8** | Mutes the sound | `Audio Mute` | Sends Windows' `volumemute` key |
+| **9** | Opens Calculator | `Calculator` | Opening a tool (`calc.exe`) |
 
-## Personalização e Segurança
+## Customising, and keeping it safe
 
 > [!WARNING]
-> **Boas Práticas de Segurança em Repositórios Públicos**:
-> - **Nunca guarde palavras-passe ou credenciais privadas diretamente no código-fonte.**
-> - Para macros que necessitem de autenticação ou tokens pessoais, utilize variáveis de ambiente (`os.getenv("MINHA_VAR")`) ou um ficheiro local não versionado (ex: `.env` ou ficheiro JSON listado no `.gitignore`).
-> - Ao personalizar os caminhos de ficheiros (como executáveis ou pastas de trabalho), verifique se os mesmos não contêm nomes de utilizador ou caminhos sensíveis da sua máquina antes de publicar alterações.
+> **Good practice in public repositories**:
+> - **Never put passwords or private credentials in the source code.**
+> - For macros that need a sign-in or a personal token, use environment variables (`os.getenv("MY_VARIABLE")`) or a local file Git doesn't track (such as `.env`, or a JSON file listed in `.gitignore`).
+> - When you change file paths (executables or work folders), check they don't hold your user name or other paths private to your machine before publishing.

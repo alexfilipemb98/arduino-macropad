@@ -47,8 +47,8 @@ This project combines an Arduino-based hardware controller with a lightweight Wi
 
 - **10 Programmable Macro Keys**: Arranged in a 2x5 matrix.
 - **OLED Status Display (128x32)**:
-  - Default view: PC synchronized date & time + ambient temperature & humidity.
-  - Active view: Real-time visual feedback of the currently pressed macro or custom status messages.
+  - Default view: PC synchronized date & time + ambient temperature & humidity, which keeps showing without the PC ("Waiting for PC...").
+  - Active view: Real-time visual feedback of the currently pressed macro or custom status messages; longer messages switch to small letters.
 - **Ambient Sensor**: Continuous temperature and humidity reading via DHT22.
 - **RGB Visual Feedback**: 3x individually addressable WS2812B NeoPixel LEDs controlled dynamically from the PC.
 - **Windows Companion Service**:
@@ -68,29 +68,30 @@ This project combines an Arduino-based hardware controller with a lightweight Wi
 | **Keypad Rows (2)** | `D3`, `D4` | Matrix row lines |
 | **Keypad Columns (5)** | `D5`, `D6`, `D7`, `D8`, `D9` | Matrix column lines |
 | **DHT22 Sensor** | `D12` | Digital data pin |
-| **Status Indicator** | `LED_BUILTIN` (`D13`) | Activity pulse on key press |
+| **Status Indicator** | `LED_BUILTIN` (`D13`) | On while the PC is connected |
 
 ---
 
 ## Serial Communication Protocol
 
-The Arduino firmware and Python service communicate over USB Serial at **9600 baud**:
+The Arduino firmware and the Python service communicate over USB Serial at **9600 baud**, one line of text per command, ending in `\n`:
 
 ### PC to Arduino Commands
 
 | Command | Syntax | Description | Example |
 | :--- | :--- | :--- | :--- |
-| **Date & Time** | `HORA:<dd/mm/yyyy hh:mm:ss>` | Updates display clock | `HORA:24/10/2026 14:30:00` |
-| **OLED Message** | `MSG:<texto>` | Displays temporary message (3s) | `MSG:Print Screen` |
+| **Date & Time** | `TIME:<dd/mm/yyyy hh:mm:ss>` | Updates display clock, every second; 5 s without one and the PC counts as gone | `TIME:24/10/2026 14:30:00` |
+| **OLED Message** | `MSG:<text>` | Displays temporary message (3s) | `MSG:Print Screen` |
 | **NeoPixel Color** | `PIXEL:<id>,<r>,<g>,<b>` | Sets color of LED index `id` (0-2) | `PIXEL:1,0,255,0` |
 
 ### Arduino to PC Commands
 
 | Command | Syntax | Description | Example |
 | :--- | :--- | :--- | :--- |
-| **Key Press** | `TECLA:<id>` | Sent immediately when key is pressed | `TECLA:0` |
-| **Temperature** | `TEMP:<val>` | Periodic ambient temperature readout | `TEMP:21.5` |
-| **Boot State** | `SISTEMA:Iniciado` | Sent on Arduino startup/reset | `SISTEMA:Iniciado` |
+| **Key Press** | `KEY:<id>` | Sent immediately when key is pressed | `KEY:0` |
+| **Temperature** | `TEMP:<val>` | Ambient temperature in °C, as the PC connects and every minute after | `TEMP:21.50` |
+| **Humidity** | `HUM:<val>` | Relative humidity in %, sent with the temperature | `HUM:55.00` |
+| **Boot State** | `SYSTEM:Started` | Sent on Arduino startup/reset | `SYSTEM:Started` |
 
 ---
 
@@ -101,15 +102,15 @@ The companion service includes safe, generic demo macros ready to use and custom
 | Key | Action | OLED Display | Description |
 | :---: | :--- | :--- | :--- |
 | **0** | `Print Screen` | `Print Screen` | Native Windows screenshot |
-| **1** | Paste Clipboard | `Escrever` / `Clipboard vazio` | Safely types current clipboard content |
-| **2** | Type Demo Text | `Demo Texto` | Types: `"Hello from Arduino MacroPad!"` |
+| **1** | Paste Clipboard | `Typing` / `Clipboard empty` | Safely types current clipboard content |
+| **2** | Type Demo Text | `Demo text` | Types: `"Hello from Arduino MacroPad!"` |
 | **3** | Visual Feedback + Text | `Demo 3` | Flashes RGB LED and types demo string |
-| **4** | Open Application | `Bloco Notas` | Launches Notepad (`notepad.exe`) |
-| **5** | Type Demo Email | `Demo Email` | Types: `"demo.user@example.com"` |
+| **4** | Open Application | `Notepad` | Launches Notepad (`notepad.exe`) |
+| **5** | Type Demo Email | `Demo email` | Types: `"demo.user@example.com"` |
 | **6** | Toggle Green LED | `Spotify` / `Spotify OFF` | Media / app toggle status demo |
-| **7** | Toggle Blue LED | `Discord` / `Desligado` | App mute / connection status demo |
+| **7** | Toggle Crimson LED | `Discord` / `Discord OFF` | App mute / connection status demo |
 | **8** | Mute Audio | `Audio Mute` | Toggles system volume mute (`volumemute`) |
-| **9** | Launch Utility | `Calculadora` | Opens Windows Calculator (`calc.exe`) |
+| **9** | Launch Utility | `Calculator` | Opens Windows Calculator (`calc.exe`) |
 
 ---
 
@@ -123,9 +124,11 @@ The companion service includes safe, generic demo macros ready to use and custom
    - `Adafruit NeoPixel` by Adafruit
    - `Adafruit SSD1306` by Adafruit
    - `Adafruit GFX Library` by Adafruit
+   - `Adafruit BusIO` by Adafruit
    - `DHT sensor library` by Adafruit
+   - `Adafruit Unified Sensor` by Adafruit
 3. Open `arduino/arduino.ino`.
-4. Select your board and serial port, then click **Upload**.
+4. Select your board and serial port, then click **Upload**. For an Arduino Nano with the old bootloader, pick **Processor -> ATmega328P (Old Bootloader)**. Close anything using the port first, such as the service.
 
 ### 2. Python Companion Service
 
@@ -139,7 +142,7 @@ The companion service includes safe, generic demo macros ready to use and custom
    ```powershell
    py service.py
    ```
-4. Right-click the **ARD** icon in your system tray and select **Configurações** to choose your Arduino's COM port.
+4. Right-click the **ARD** icon in your system tray and select **Settings** to choose your Arduino's COM port.
 
 ### 3. Build Standalone Executable (.exe)
 
